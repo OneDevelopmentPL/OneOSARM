@@ -1,0 +1,29 @@
+BScanning PCI for Bochs Display...
+-> Found Bochs Display!
+   Framebuffer mapped at: 0x10000000
+   MMIO mapped at: 0x11000000
+   VBE Display Enabled
+[2J[H=== OneOS-ARM 1 Booting ===                                                     
+[OK] Memory initialized                                                         
+[OK] Keyboard initialized                                                       
+[OK] Terminal initialized                                                       
+                                                                                
+Welcome to OneOS-ARM 1!                                                         
+Type 'help' for commands                                                        
+                                                                                
+>                                                                               
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                

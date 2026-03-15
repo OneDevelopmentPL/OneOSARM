@@ -1,0 +1,10 @@
+# U-Boot boot script for OneOS-ARM
+# This script is loaded by U-Boot and configures the kernel boot
+
+# Set kernel arguments
+setenv bootargs "console=ttyAMA0 root=/dev/ram"
+
+# Load kernel from memory address
+setenv kerneladdr 0x40100000
+setenv loadaddr 0x40100000
+bootm ${kerneladdr}

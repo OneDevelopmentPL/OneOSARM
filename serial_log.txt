@@ -1,0 +1,12 @@
+BVirtIO Input Device found at index 1E
+  -> EV_REL supported (relative mouse)
+  Type: [MOUSE-REL]
+VirtIO Input Device found at index 1F
+  Type: [KBD]
+VirtIO Input: 2 device(s) initialized
+VirtIO RNG Device found at index 1D
+Scanning PCI for Bochs Display...
+-> Found Bochs Display!
+   Framebuffer mapped at: 0x10000000
+   MMIO mapped at: 0x11000000
+   VBE Display Enabled (400x300x32)
