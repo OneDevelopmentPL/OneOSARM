@@ -33,17 +33,17 @@ void fb_draw_hline(int x, int y, int length, unsigned int color);
 void fb_draw_vline(int x, int y, int length, unsigned int color);
 
 /* Color definitions (32-bit BGRX8888) */
-#define COLOR_BLACK     0x00000000
-#define COLOR_WHITE     0x00FFFFFF
-#define COLOR_RED       0x00FF0000
-#define COLOR_GREEN     0x0000FF00
-#define COLOR_BLUE      0x000000FF
-#define COLOR_CYAN      0x0000FFFF
-#define COLOR_MAGENTA   0x00FF00FF
-#define COLOR_YELLOW    0x00FFFF00
-#define COLOR_GRAY      0x00808080
-#define COLOR_LIGHT_GRAY 0x00C0C0C0
-#define COLOR_DARK_BLUE 0x00000060
+#define COLOR_BLACK     0xFF000000
+#define COLOR_WHITE     0xFFFFFFFF
+#define COLOR_RED       0xFFFF0000
+#define COLOR_GREEN     0xFF00FF00
+#define COLOR_BLUE      0xFF0000FF
+#define COLOR_CYAN      0xFF00FFFF
+#define COLOR_MAGENTA   0xFFFF00FF
+#define COLOR_YELLOW    0xFFFFFF00
+#define COLOR_GRAY      0xFF808080
+#define COLOR_LIGHT_GRAY 0xFFC0C0C0
+#define COLOR_DARK_BLUE 0xFF000060
 
 /* Default framebuffer physical base (may vary by QEMU/device) */
 #define FB_BASE 0x3eff0000

@@ -21,6 +21,8 @@ void vfs_init(void)
     nodes[0].name[1] = '\0';
     
     /* Create some default files */
+    int desktop = vfs_create("Desktop", 0, VFS_TYPE_DIR);
+    (void)desktop;
     int docs = vfs_create("Documents", 0, VFS_TYPE_DIR);
     int sys  = vfs_create("System", 0, VFS_TYPE_DIR);
     

@@ -137,6 +137,7 @@ const unsigned char font8x8[128][8] = {
 void gfx_draw_char(int x, int y, char c, unsigned int fg_color, unsigned int bg_color)
 {
     unsigned char *glyph = (unsigned char *)font8x8[(unsigned char)c];
+    asm volatile("dmb sy" ::: "memory");
     
     for (int row = 0; row < 8; row++) {
         unsigned char byte = glyph[row];

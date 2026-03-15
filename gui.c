@@ -19,7 +19,7 @@
 #define TASKBAR_TEXT    0xFFFFFFFF
 
 /* Desktop */
-#define DESKTOP_COLOR   0x00206080
+#define DESKTOP_COLOR   0xFF206080
 
 /* Mouse cursor */
 static int mouse_x = 512;
@@ -44,42 +44,53 @@ static int start_menu_open = 0;
 #define MENU_TEXT    0xFFFFFFFF
 #define MENU_ITEMS  3
 
-static const char *menu_labels[MENU_ITEMS] = {
+static const char *menu_labels[4] = {
     "File Manager",
     "Notepad",
-    "Settings"
+    "Settings",
+    "System Info"
 };
+#undef MENU_ITEMS
+#define MENU_ITEMS 4
 
 /* ---- Window management ---- */
 #define WIN_MAX_TITLE 32
 #define WIN_TITLEBAR_H 24
-#define WIN_TITLEBAR_COLOR 0x00304060
-#define WIN_TITLEBAR_ACTIVE 0x004060A0
-#define WIN_BG_COLOR   0x00E0E0E0
-#define WIN_TEXT_COLOR  0x00000000
-#define WIN_BORDER     0x00808080
+#define WIN_TITLEBAR_COLOR 0xFF304060
+#define WIN_TITLEBAR_ACTIVE 0xFF4060A0
+#define WIN_BG_COLOR   0xFFE0E0E0
+#define WIN_TEXT_COLOR  0xFF000000
+#define WIN_BORDER     0xFF808080
 
-#define MAX_WINDOWS 4
 #define WIN_FILE_MGR 0
 #define WIN_NOTEPAD  1
 #define WIN_SETTINGS 2
+#define WIN_SYSINFO  3
+
+#define MAX_WINDOWS 4
 
 typedef struct {
     int x, y, w, h;
+    int old_x, old_y, old_w, old_h;
     int visible;
+    int maximized;
     char title[WIN_MAX_TITLE];
 } gui_window_t;
 
 static gui_window_t windows[MAX_WINDOWS];
 static int active_win = -1;
 static int win_order[MAX_WINDOWS]; /* z-order: front = last */
-static int win_count = 3;
+static int win_count = 4;
 
 /* File manager state */
 static int fm_current_dir = 0;
 static int fm_selected = -1;
 static int fm_file_indices[64];
 static int fm_file_count = 0;
+
+/* Desktop state */
+static int desktop_file_indices[32];
+static int desktop_file_count = 0;
 
 /* Notepad state */
 #define NOTEPAD_BUF_SIZE 1024
@@ -106,13 +117,17 @@ static int rename_file_idx = -1;
 static char rename_buf[VFS_MAX_NAME];
 static int rename_len = 0;
 
+static const char *context_menu_items[3] = {"Open", "Rename", "Delete"};
+
 /* GUI state */
 static int gui_running = 0;
+static unsigned int current_desktop_color = 0xFF206080;
+static int transparency_enabled = 0;
 
 /* Desktop icon positions */
 #define ICON_W 64
 #define ICON_H 56
-#define ICON_TEXT_COLOR 0x00FFFFFF
+#define ICON_TEXT_COLOR 0xFFFFFFFF
 
 typedef struct {
     int x, y;
@@ -122,9 +137,9 @@ typedef struct {
 } desktop_icon_t;
 
 static desktop_icon_t icons[] = {
-    { 20,  20, "Files",    WIN_FILE_MGR, 0x00E0C060 },
-    { 20, 100, "Notepad",  WIN_NOTEPAD,  0x00FFFFFF },
-    { 20, 180, "Settings", WIN_SETTINGS, 0x00808090 },
+    { 20,  20, "Files",    WIN_FILE_MGR, 0xFFE0C060 },
+    { 20, 100, "Notepad",  WIN_NOTEPAD,  0xFFFFFFFF },
+    { 20, 180, "Settings", WIN_SETTINGS, 0xFF808090 },
 };
 #define ICON_COUNT 3
 
@@ -153,8 +168,10 @@ static void gui_draw_window(gui_window_t *win, int active);
 static void gui_draw_file_manager(void);
 static void gui_draw_notepad(void);
 static void gui_draw_settings(void);
+static void gui_draw_sysinfo(void);
 static void gui_draw_start_menu(void);
 static void gui_draw_icons(void);
+static void gui_sync_desktop(void);
 static void gui_handle_mouse_move(int dx, int dy);
 static void gui_handle_click(void);
 static void gui_refresh_file_list(void);
@@ -220,6 +237,7 @@ void gui_init(void)
     windows[WIN_FILE_MGR].w = 400;
     windows[WIN_FILE_MGR].h = 450;
     windows[WIN_FILE_MGR].visible = 1;
+    windows[WIN_FILE_MGR].maximized = 0;
     str_copy(windows[WIN_FILE_MGR].title, "File Manager", WIN_MAX_TITLE);
 
     /* Notepad */
@@ -228,20 +246,32 @@ void gui_init(void)
     windows[WIN_NOTEPAD].w = 440;
     windows[WIN_NOTEPAD].h = 400;
     windows[WIN_NOTEPAD].visible = 0;
+    windows[WIN_NOTEPAD].maximized = 0;
     str_copy(windows[WIN_NOTEPAD].title, "Notepad", WIN_MAX_TITLE);
 
     /* Settings */
     windows[WIN_SETTINGS].x = 300;
     windows[WIN_SETTINGS].y = 120;
     windows[WIN_SETTINGS].w = 360;
-    windows[WIN_SETTINGS].h = 300;
+    windows[WIN_SETTINGS].h = 400; /* Increased H for more options */
     windows[WIN_SETTINGS].visible = 0;
+    windows[WIN_SETTINGS].maximized = 0;
     str_copy(windows[WIN_SETTINGS].title, "Settings", WIN_MAX_TITLE);
 
-    /* Z-order: file manager on top initially */
-    win_order[0] = WIN_SETTINGS;
-    win_order[1] = WIN_NOTEPAD;
-    win_order[2] = WIN_FILE_MGR;
+    /* System Info */
+    windows[WIN_SYSINFO].x = 320;
+    windows[WIN_SYSINFO].y = 140;
+    windows[WIN_SYSINFO].w = 300;
+    windows[WIN_SYSINFO].h = 240;
+    windows[WIN_SYSINFO].visible = 0;
+    windows[WIN_SYSINFO].maximized = 0;
+    str_copy(windows[WIN_SYSINFO].title, "System Info", WIN_MAX_TITLE);
+
+    /* Z-order */
+    win_order[0] = WIN_SYSINFO;
+    win_order[1] = WIN_SETTINGS;
+    win_order[2] = WIN_NOTEPAD;
+    win_order[3] = WIN_FILE_MGR;
     active_win = WIN_FILE_MGR;
 
     notepad_len = 0;
@@ -250,15 +280,29 @@ void gui_init(void)
     notepad_active = 0;
     start_menu_open = 0;
 
-    fm_current_dir = vfs_root();
+    fm_current_dir = vfs_find("Desktop", 0);
+    if (fm_current_dir < 0) fm_current_dir = vfs_root();
+    
+    gui_sync_desktop();
     gui_refresh_file_list();
     gui_running = 1;
+}
+
+static void gui_sync_desktop(void)
+{
+    int desktop = vfs_find("Desktop", 0);
+    if (desktop >= 0) {
+        desktop_file_count = vfs_list(desktop, desktop_file_indices, 32);
+    } else {
+        desktop_file_count = 0;
+    }
 }
 
 static void gui_refresh_file_list(void)
 {
     fm_file_count = vfs_list(fm_current_dir, fm_file_indices, 64);
     fm_selected = -1;
+    gui_sync_desktop(); /* Keep desktop dynamic icons in sync */
 }
 
 /* ---- Bring window to front ---- */
@@ -282,22 +326,27 @@ static void gui_bring_to_front(int win_id)
 /* ---- Drawing ---- */
 static void gui_draw_desktop(void)
 {
+    unsigned char base_r = (current_desktop_color >> 16) & 0xFF;
+    unsigned char base_g = (current_desktop_color >> 8) & 0xFF;
+    unsigned char base_b = current_desktop_color & 0xFF;
+
     /* Gradient-style desktop: two-tone */
     for (int y = 0; y < SCREEN_H - TASKBAR_H; y++) {
         /* Darken slightly toward bottom */
-        int r = 0x20 - (y * 0x10 / SCREEN_H);
-        int g = 0x60 - (y * 0x20 / SCREEN_H);
-        int b = 0x80 - (y * 0x10 / SCREEN_H);
+        int r = (int)base_r - (y * 0x10 / SCREEN_H);
+        int g = (int)base_g - (y * 0x20 / SCREEN_H);
+        int b = (int)base_b - (y * 0x10 / SCREEN_H);
         if (r < 0) r = 0;
         if (g < 0) g = 0;
         if (b < 0) b = 0;
-        unsigned int color = ((unsigned int)r << 16) | ((unsigned int)g << 8) | (unsigned int)b;
+        unsigned int color = 0xFF000000 | ((unsigned int)r << 16) | ((unsigned int)g << 8) | (unsigned int)b;
         fb_draw_hline(0, y, SCREEN_W, color);
     }
 }
 
 static void gui_draw_icons(void)
 {
+    /* 1. Hardcoded app icons */
     for (int i = 0; i < ICON_COUNT; i++) {
         int ix = icons[i].x;
         int iy = icons[i].y;
@@ -307,24 +356,52 @@ static void gui_draw_icons(void)
 
         /* Small inner detail */
         if (i == 0) { /* Files: folder shape */
-            fb_draw_rect(ix + 18, iy + 2, 12, 6, 0x00C0A030);
-            fb_draw_rect(ix + 18, iy + 6, 28, 22, 0x00D0B050);
+            fb_draw_rect(ix + 18, iy + 2, 12, 6, 0xFFC0A030);
+            fb_draw_rect(ix + 18, iy + 6, 28, 22, 0xFFD0B050);
         } else if (i == 1) { /* Notepad: lined paper */
-            fb_draw_rect(ix + 20, iy + 4, 24, 24, 0x00F0F0F0);
+            fb_draw_rect(ix + 20, iy + 4, 24, 24, 0xFFF0F0F0);
             for (int ln = 0; ln < 4; ln++) {
-                fb_draw_hline(ix + 22, iy + 8 + ln * 5, 20, 0x00A0A0CC);
+                fb_draw_hline(ix + 22, iy + 8 + ln * 5, 20, 0xFFA0A0CC);
             }
         } else { /* Settings: gear-ish */
-            fb_draw_rect(ix + 24, iy + 4, 16, 24, 0x00606070);
-            fb_draw_rect(ix + 20, iy + 10, 24, 12, 0x00707080);
+            fb_draw_rect(ix + 24, iy + 4, 16, 24, 0xFF606070);
+            fb_draw_rect(ix + 20, iy + 10, 24, 12, 0xFF707080);
         }
 
         /* Label below icon */
         int lx = ix + 4;
         int ly = iy + 36;
-        /* Shadow text */
-        gfx_draw_string(lx + 1, ly + 1, icons[i].label, 0x00000000, DESKTOP_COLOR);
+        gfx_draw_string(lx + 1, ly + 1, icons[i].label, 0xFF000000, DESKTOP_COLOR);
         gfx_draw_string(lx, ly, icons[i].label, ICON_TEXT_COLOR, DESKTOP_COLOR);
+    }
+
+    /* 2. Dynamic icons from Desktop folder */
+    int start_x = 100;
+    int cur_y = 20;
+    for (int i = 0; i < desktop_file_count; i++) {
+        vfs_node_t *node = vfs_get(desktop_file_indices[i]);
+        if (!node) continue;
+
+        int ix = start_x;
+        int iy = cur_y;
+
+        /* Folder icon */
+        if (node->type == VFS_TYPE_DIR) {
+            fb_draw_rect(ix + 18, iy + 2, 12, 6, 0xFFE0C060);
+            fb_draw_rect(ix + 18, iy + 6, 28, 22, 0xFFE0C060);
+        } else { /* File icon */
+            fb_draw_rect(ix + 20, iy + 2, 24, 28, 0xFFFFFFFF);
+            fb_draw_rect(ix + 20, iy + 2, 24, 1, 0xFF808080);
+        }
+
+        /* Label */
+        gfx_draw_string(ix + 4, iy + 36, node->name, ICON_TEXT_COLOR, DESKTOP_COLOR);
+
+        cur_y += 80;
+        if (cur_y > SCREEN_H - 100) {
+            cur_y = 20;
+            start_x += 80;
+        }
     }
 }
 
@@ -370,7 +447,7 @@ static void gui_draw_window(gui_window_t *win, int is_active)
     int x = win->x, y = win->y, w = win->w, h = win->h;
 
     /* Shadow */
-    fb_draw_rect(x + 3, y + 3, w, h, 0x00101010);
+    fb_draw_rect(x + 3, y + 3, w, h, 0xFF101010);
 
     /* Window border */
     fb_draw_rect(x, y, w, h, WIN_BORDER);
@@ -378,14 +455,23 @@ static void gui_draw_window(gui_window_t *win, int is_active)
     /* Title bar */
     unsigned int tb_color = is_active ? WIN_TITLEBAR_ACTIVE : WIN_TITLEBAR_COLOR;
     fb_draw_rect(x + 1, y + 1, w - 2, WIN_TITLEBAR_H, tb_color);
-    gfx_draw_string(x + 8, y + 4, win->title, 0x00FFFFFF, tb_color);
+    gfx_draw_string(x + 8, y + 4, win->title, 0xFFFFFFFF, tb_color);
 
     /* Close button [X] */
-    fb_draw_rect(x + w - 25, y + 3, 20, 18, 0x00C04040);
-    gfx_draw_string(x + w - 22, y + 4, "X", 0x00FFFFFF, 0x00C04040);
+    fb_draw_rect(x + w - 25, y + 3, 20, 18, 0xFFC04040);
+    gfx_draw_string(x + w - 22, y + 4, "X", 0xFFFFFFFF, 0xFFC04040);
+
+    /* Maximize button [M] / Restore [R] */
+    fb_draw_rect(x + w - 48, y + 3, 20, 18, 0xFF408040);
+    gfx_draw_string(x + w - 45, y + 4, win->maximized ? "R" : "M", 0xFFFFFFFF, 0xFF408040);
 
     /* Window background */
-    fb_draw_rect(x + 1, y + WIN_TITLEBAR_H + 1, w - 2, h - WIN_TITLEBAR_H - 2, WIN_BG_COLOR);
+    unsigned int bg = WIN_BG_COLOR;
+    if (transparency_enabled) {
+        /* Mock transparency: just use a slightly different color or actual alpha if supported */
+        bg = (bg & 0x00FFFFFF) | 0xCC000000; /* ~80% opaque */
+    }
+    fb_draw_rect(x + 1, y + WIN_TITLEBAR_H + 1, w - 2, h - WIN_TITLEBAR_H - 2, bg);
 
     /* Toolbar for Notepad */
     if (win == &windows[WIN_NOTEPAD]) {
@@ -551,13 +637,66 @@ static void gui_draw_settings(void)
     y += 36;
 
     /* Minute controls */
-    gfx_draw_string(x + 16, y + 4, "Min:", 0x00000000, WIN_BG_COLOR);
+    gfx_draw_string(x + 16, y + 4, "Min:", 0xFF000000, WIN_BG_COLOR);
     /* [-] button */
-    fb_draw_rect(x + 120, y, 36, 24, 0x00506090);
-    gfx_draw_string(x + 130, y + 4, "-", 0x00FFFFFF, 0x00506090);
+    fb_draw_rect(x + 120, y, 36, 24, 0xFF506090);
+    gfx_draw_string(x + 130, y + 4, "-", 0xFFFFFFFF, 0xFF506090);
     /* [+] button */
-    fb_draw_rect(x + 170, y, 36, 24, 0x00506090);
-    gfx_draw_string(x + 178, y + 4, "+", 0x00FFFFFF, 0x00506090);
+    fb_draw_rect(x + 170, y, 36, 24, 0xFF506090);
+    gfx_draw_string(x + 178, y + 4, "+", 0xFFFFFFFF, 0xFF506090);
+    y += 48;
+
+    /* Desktop Theme */
+    gfx_draw_string(x + 16, y, "Desktop Theme", 0xFF000000, WIN_BG_COLOR);
+    y += 24;
+    unsigned int themes[] = { 0x206080, 0x602040, 0x206040, 0x303030 };
+    for (int i = 0; i < 4; i++) {
+        unsigned int c = 0xFF000000 | themes[i];
+        fb_draw_rect(x + 16 + i * 40, y, 32, 24, c);
+        if (current_desktop_color == c) {
+            fb_draw_rect(x + 16 + i * 40, y + 26, 32, 2, 0xFF00FF00);
+        }
+    }
+    y += 40;
+
+    /* Transparency Toggle */
+    gfx_draw_string(x + 16, y + 4, "Transparency:", 0xFF000000, WIN_BG_COLOR);
+    fb_draw_rect(x + 140, y, 60, 24, transparency_enabled ? 0xFF40A040 : 0xFF804040);
+    gfx_draw_string(x + 145, y + 4, transparency_enabled ? "ON" : "OFF", 0xFFFFFFFF, transparency_enabled ? 0xFF40A040 : 0xFF804040);
+}
+
+static void gui_draw_sysinfo(void)
+{
+    gui_window_t *win = &windows[WIN_SYSINFO];
+    if (!win->visible) return;
+
+    int x = win->x + 16;
+    int y = win->y + WIN_TITLEBAR_H + 20;
+
+    gfx_draw_string(x, y, "OneOS-ARM Kernel v1.0", 0xFF000000, WIN_BG_COLOR);
+    y += 24;
+    gfx_draw_string(x, y, "Architecture: AArch64", 0xFF404040, WIN_BG_COLOR);
+    y += 20;
+    gfx_draw_string(x, y, "Machine: QEMU Virt", 0xFF404040, WIN_BG_COLOR);
+    y += 20;
+    gfx_draw_string(x, y, "Memory: 256 MB RAM", 0xFF404040, WIN_BG_COLOR);
+    y += 30;
+
+    /* Some dynamic mock data or from hardware */
+    gfx_draw_string(x, y, "Status: System Running", 0xFF006000, WIN_BG_COLOR);
+    y += 20;
+    
+    unsigned long freq = get_timer_freq();
+    char freq_str[32] = "Timer Freq (Hz): ";
+    /* Simple integer to string conversion */
+    int slen = 17;
+    unsigned long n = freq;
+    char digits[12]; int dcount = 0;
+    if (n == 0) digits[dcount++] = '0';
+    else while (n > 0 && dcount < 11) { digits[dcount++] = '0' + (n % 10); n /= 10; }
+    for (int i = dcount-1; i >= 0; i--) freq_str[slen++] = digits[i];
+    freq_str[slen] = '\0';
+    gfx_draw_string(x, y, freq_str, 0xFF404040, WIN_BG_COLOR);
 }
 
 static void gui_draw_start_menu(void)
@@ -583,7 +722,7 @@ static void gui_draw_start_menu(void)
                      mouse_y >= iy && mouse_y < iy + MENU_ITEM_H);
         unsigned int bg = hover ? MENU_HOVER : MENU_BG;
         fb_draw_rect(MENU_X + 2, iy, MENU_W - 4, MENU_ITEM_H, bg);
-        gfx_draw_string(MENU_X + 12, iy + 6, menu_labels[i], MENU_TEXT, bg);
+        gfx_draw_string(MENU_X + 12, iy + 4, menu_labels[i], MENU_TEXT, bg);
     }
 }
 
@@ -608,14 +747,13 @@ static void gui_draw_context_menu(void)
     fb_draw_vline(mx + CONTEXT_W - 1, my, CONTEXT_H, 0x00505070);
     fb_draw_hline(mx, my + CONTEXT_H - 1, CONTEXT_W, 0xFF505070);
     
-    static const char *items[3] = {"Open", "Rename", "Delete"};
     for (int i = 0; i < 3; i++) {
         int iy = my + 4 + i * 28;
         int hover = (mouse_x >= mx && mouse_x < mx + CONTEXT_W &&
                      mouse_y >= iy - 4 && mouse_y < iy + 24);
         unsigned int bg = hover ? CONTEXT_HOVER : CONTEXT_BG;
         fb_draw_rect(mx + 2, iy - 4, CONTEXT_W - 4, 28, bg);
-        gfx_draw_string(mx + 12, iy + 2, items[i], CONTEXT_TEXT, bg);
+        gfx_draw_string(mx + 12, iy + 4, context_menu_items[i], COLOR_WHITE, bg);
     }
 }
 
@@ -793,17 +931,10 @@ static void gui_handle_click(void)
                 int iy = my + 4 + i * MENU_ITEM_H;
                 if (hit_rect(mouse_x, mouse_y, MENU_X, iy, MENU_W, MENU_ITEM_H)) {
                     start_menu_open = 0;
-                    if (i == 0) { /* File Manager */
-                        windows[WIN_FILE_MGR].visible = 1;
-                        gui_refresh_file_list();
-                        gui_bring_to_front(WIN_FILE_MGR);
-                    } else if (i == 1) { /* Notepad */
-                        windows[WIN_NOTEPAD].visible = 1;
-                        gui_bring_to_front(WIN_NOTEPAD);
-                    } else if (i == 2) { /* Settings */
-                        windows[WIN_SETTINGS].visible = 1;
-                        gui_bring_to_front(WIN_SETTINGS);
-                    }
+                    if (i == 0) { windows[WIN_FILE_MGR].visible = 1; gui_refresh_file_list(); gui_bring_to_front(WIN_FILE_MGR); }
+                    else if (i == 1) { windows[WIN_NOTEPAD].visible = 1; gui_bring_to_front(WIN_NOTEPAD); }
+                    else if (i == 2) { windows[WIN_SETTINGS].visible = 1; gui_bring_to_front(WIN_SETTINGS); }
+                    else if (i == 3) { windows[WIN_SYSINFO].visible = 1; gui_bring_to_front(WIN_SYSINFO); }
                     return;
                 }
             }
@@ -816,6 +947,41 @@ static void gui_handle_click(void)
     if (hit_rect(mouse_x, mouse_y, 4, SCREEN_H - TASKBAR_H + 4, 80, TASKBAR_H - 8)) {
         start_menu_open = !start_menu_open;
         return;
+    }
+
+    /* 2.5 Dynamic Desktop Icons */
+    {
+        int start_x = 100;
+        int cur_y = 20;
+        for (int i = 0; i < desktop_file_count; i++) {
+            if (hit_rect(mouse_x, mouse_y, start_x, cur_y, 64, 80)) {
+                vfs_node_t *node = vfs_get(desktop_file_indices[i]);
+                if (node) {
+                    if (node->type == VFS_TYPE_DIR) {
+                        fm_current_dir = desktop_file_indices[i];
+                        windows[WIN_FILE_MGR].visible = 1;
+                        gui_bring_to_front(WIN_FILE_MGR);
+                        gui_refresh_file_list();
+                    } else {
+                        /* Open file in notepad */
+                        str_copy(notepad_filename, node->name, WIN_MAX_TITLE);
+                        int rlen = vfs_read(desktop_file_indices[i], notepad_buf, NOTEPAD_BUF_SIZE);
+                        if (rlen >= 0) {
+                            notepad_len = rlen;
+                            notepad_buf[notepad_len] = '\0';
+                            windows[WIN_NOTEPAD].visible = 1;
+                            gui_bring_to_front(WIN_NOTEPAD);
+                        }
+                    }
+                }
+                return;
+            }
+            cur_y += 80;
+            if (cur_y > SCREEN_H - 100) {
+                cur_y = 20;
+                start_x += 80;
+            }
+        }
     }
 
     /* 3. Taskbar window buttons */
@@ -866,6 +1032,28 @@ static void gui_handle_click(void)
                 return;
             }
 
+            /* Maximize/Restore button */
+            if (hit_rect(mouse_x, mouse_y, win->x + win->w - 48, win->y + 3, 20, 18)) {
+                if (win->maximized) {
+                    win->x = win->old_x;
+                    win->y = win->old_y;
+                    win->w = win->old_w;
+                    win->h = win->old_h;
+                    win->maximized = 0;
+                } else {
+                    win->old_x = win->x;
+                    win->old_y = win->y;
+                    win->old_w = win->w;
+                    win->old_h = win->h;
+                    win->x = 0;
+                    win->y = 0;
+                    win->w = SCREEN_W;
+                    win->h = SCREEN_H - TASKBAR_H;
+                    win->maximized = 1;
+                }
+                return;
+            }
+
             /* Settings-specific button handling */
             if (wid == WIN_SETTINGS) {
                 int sx = win->x;
@@ -881,9 +1069,7 @@ static void gui_handle_click(void)
                     clock_hour = (clock_hour + 1) % 24;
                     return;
                 }
-
-                sy += 36; /* "Min:" row y */
-
+                sy += 36; /* Move to "Min:" row */
                 /* Min [-] */
                 if (hit_rect(mouse_x, mouse_y, sx + 120, sy, 36, 24)) {
                     clock_minute = (clock_minute + 59) % 60;
@@ -892,6 +1078,19 @@ static void gui_handle_click(void)
                 /* Min [+] */
                 if (hit_rect(mouse_x, mouse_y, sx + 170, sy, 36, 24)) {
                     clock_minute = (clock_minute + 1) % 60;
+                    return;
+                }
+                sy += 48 + 24; /* Move to Theme row */
+                for (int i = 0; i < 4; i++) {
+                    if (hit_rect(mouse_x, mouse_y, sx + 16 + i * 40, sy, 32, 24)) {
+                        unsigned int themes[] = { 0x206080, 0x602040, 0x206040, 0x303030 };
+                        current_desktop_color = 0xFF000000 | themes[i];
+                        return;
+                    }
+                }
+                sy += 40; /* Move to Transparency row */
+                if (hit_rect(mouse_x, mouse_y, sx + 140, sy, 60, 24)) {
+                    transparency_enabled = !transparency_enabled;
                     return;
                 }
             }
@@ -993,6 +1192,7 @@ static void gui_render(void)
         if (wid == WIN_FILE_MGR) gui_draw_file_manager();
         else if (wid == WIN_NOTEPAD) gui_draw_notepad();
         else if (wid == WIN_SETTINGS) gui_draw_settings();
+        else if (wid == WIN_SYSINFO) gui_draw_sysinfo();
     }
 
     if (rename_dialog_open) gui_draw_rename_dialog();
