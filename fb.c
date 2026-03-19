@@ -9,6 +9,9 @@
 #define FB_BPP      32              /* 32-bit color (BGRX8888) */
 
 static framebuffer_t fb;
+static unsigned char *frontbuffer = 0;
+static unsigned int backbuffer[FB_WIDTH * FB_HEIGHT] __attribute__((aligned(16)));
+static int use_backbuffer = 0;
 
 void fb_init(void)
 {
@@ -18,9 +21,12 @@ void fb_init(void)
     fb.height = FB_HEIGHT;
     fb.pitch = FB_PITCH;
     fb.bpp = FB_BPP;
-    fb.buffer = gpu_get_framebuffer();
+    frontbuffer = gpu_get_framebuffer();
+    fb.buffer = frontbuffer;
+    use_backbuffer = 0;
     
-    /* gpu_init already clears the screen */
+    /* Clear screen directly */
+    fb_clear(COLOR_BLACK);
 }
 
 framebuffer_t* fb_get(void)
@@ -71,3 +77,24 @@ void fb_draw_vline(int x, int y, int length, unsigned int color)
     }
 }
 
+void fb_present(void)
+{
+    if (!frontbuffer || !use_backbuffer) return;
+    volatile unsigned int *dst = (volatile unsigned int *)frontbuffer;
+    unsigned int *src = (unsigned int *)fb.buffer;
+    int pixels = (int)(fb.width * fb.height);
+    for (int i = 0; i < pixels; i++) {
+        dst[i] = src[i];
+    }
+}
+
+void fb_use_backbuffer(int enable)
+{
+    if (!frontbuffer) return;
+    use_backbuffer = enable ? 1 : 0;
+    fb.buffer = use_backbuffer ? (unsigned char *)backbuffer : frontbuffer;
+    if (use_backbuffer) {
+        fb_clear(COLOR_BLACK);
+        fb_present();
+    }
+}

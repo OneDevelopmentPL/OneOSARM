@@ -24,8 +24,9 @@
 /* Mouse cursor */
 static int mouse_x = 512;
 static int mouse_y = 384;
-#define MOUSE_COLOR     0x00FFFFFF
-#define MOUSE_OUTLINE   0x00000000
+#define MOUSE_COLOR     0xFFFFFFFF
+#define MOUSE_OUTLINE   0xFF000000
+#define MOUSE_SHADOW    0xFF404040
 
 /* Clock state */
 static int clock_hour = 12;
@@ -42,16 +43,20 @@ static int start_menu_open = 0;
 #define MENU_BG     0xFF303050
 #define MENU_HOVER  0xFF506090
 #define MENU_TEXT    0xFFFFFFFF
+#define MENU_TEXT_SHADOW 0xFF101010
 #define MENU_ITEMS  3
 
-static const char *menu_labels[4] = {
+static const char *menu_labels[7] = {
     "File Manager",
     "Notepad",
     "Settings",
-    "System Info"
+    "System Info",
+    "Clock",
+    "Paint",
+    "Terminal"
 };
 #undef MENU_ITEMS
-#define MENU_ITEMS 4
+#define MENU_ITEMS 7
 
 /* ---- Window management ---- */
 #define WIN_MAX_TITLE 32
@@ -66,8 +71,11 @@ static const char *menu_labels[4] = {
 #define WIN_NOTEPAD  1
 #define WIN_SETTINGS 2
 #define WIN_SYSINFO  3
+#define WIN_CLOCK    4
+#define WIN_PAINT    5
+#define WIN_TERMINAL 6
 
-#define MAX_WINDOWS 4
+#define MAX_WINDOWS 7
 
 typedef struct {
     int x, y, w, h;
@@ -80,7 +88,7 @@ typedef struct {
 static gui_window_t windows[MAX_WINDOWS];
 static int active_win = -1;
 static int win_order[MAX_WINDOWS]; /* z-order: front = last */
-static int win_count = 4;
+static int win_count = MAX_WINDOWS;
 
 /* File manager state */
 static int fm_current_dir = 0;
@@ -99,6 +107,21 @@ static int notepad_len = 0;
 static int notepad_active = 0; /* 1 = notepad captures keyboard */
 static char notepad_filename[WIN_MAX_TITLE];
 static int notepad_dir = 0;
+
+/* Paint state */
+#define PAINT_W 320
+#define PAINT_H 200
+static unsigned int paint_canvas[PAINT_W * PAINT_H];
+static unsigned int paint_color = 0xFF000000;
+static int paint_brush = 1;
+
+/* Terminal state */
+#define TERM_BUF_SIZE 1024
+#define TERM_PROMPT "OneOS> "
+#define TERM_PROMPT_LEN 7
+static char term_buf[TERM_BUF_SIZE];
+static int term_len = 0;
+static int term_active = 0;
 
 /* Context Menu State */
 static int context_menu_open = 0;
@@ -123,6 +146,24 @@ static const char *context_menu_items[3] = {"Open", "Rename", "Delete"};
 static int gui_running = 0;
 static unsigned int current_desktop_color = 0xFF206080;
 static int transparency_enabled = 0;
+static int show_seconds = 0;
+static int mouse_speed = 1;
+static int cursor_scale = 1;
+static int gui_use_backbuffer = 0;
+static int cursor_style = 0;
+#define CURSOR_STYLE_COUNT 3
+static const char *cursor_style_labels[CURSOR_STYLE_COUNT] = {
+    "Arrow",
+    "Cross",
+    "I-Beam"
+};
+
+/* Cursor overlay (frontbuffer mode) */
+#define CURSOR_MAX 34
+static unsigned int cursor_under[CURSOR_MAX * CURSOR_MAX];
+static int cursor_valid = 0;
+static int cursor_old_x = 0;
+static int cursor_old_y = 0;
 
 /* Desktop icon positions */
 #define ICON_W 64
@@ -140,8 +181,11 @@ static desktop_icon_t icons[] = {
     { 20,  20, "Files",    WIN_FILE_MGR, 0xFFE0C060 },
     { 20, 100, "Notepad",  WIN_NOTEPAD,  0xFFFFFFFF },
     { 20, 180, "Settings", WIN_SETTINGS, 0xFF808090 },
+    { 20, 260, "Clock",    WIN_CLOCK,    0xFF60A0C0 },
+    { 20, 340, "Paint",    WIN_PAINT,    0xFFA0C060 },
+    { 20, 420, "Terminal", WIN_TERMINAL, 0xFF60C090 },
 };
-#define ICON_COUNT 3
+#define ICON_COUNT 6
 
 /* ---- Helper: copy string ---- */
 static void str_copy(char *dst, const char *src, int max)
@@ -149,6 +193,21 @@ static void str_copy(char *dst, const char *src, int max)
     int i = 0;
     while (src[i] && i < max - 1) { dst[i] = src[i]; i++; }
     dst[i] = '\0';
+}
+
+static void term_append_char(char c)
+{
+    if (term_len < TERM_BUF_SIZE - 1) {
+        term_buf[term_len++] = c;
+        term_buf[term_len] = '\0';
+    }
+}
+
+static void term_append_str(const char *s)
+{
+    while (*s) {
+        term_append_char(*s++);
+    }
 }
 
 /* ---- Helper: int to 2-digit string ---- */
@@ -169,6 +228,9 @@ static void gui_draw_file_manager(void);
 static void gui_draw_notepad(void);
 static void gui_draw_settings(void);
 static void gui_draw_sysinfo(void);
+static void gui_draw_clock(void);
+static void gui_draw_paint(void);
+static void gui_draw_terminal(void);
 static void gui_draw_start_menu(void);
 static void gui_draw_icons(void);
 static void gui_sync_desktop(void);
@@ -176,6 +238,7 @@ static void gui_handle_mouse_move(int dx, int dy);
 static void gui_handle_click(void);
 static void gui_refresh_file_list(void);
 static void gui_bring_to_front(int win_id);
+static void gui_draw_mouse_overlay(void);
 
 /* ---- Clock ---- */
 void gui_set_time(int hour, int minute)
@@ -230,6 +293,7 @@ void gui_init(void)
 {
     mouse_x = SCREEN_W / 2;
     mouse_y = SCREEN_H / 2;
+    fb_use_backbuffer(gui_use_backbuffer);
 
     /* File Manager */
     windows[WIN_FILE_MGR].x = 200;
@@ -253,7 +317,7 @@ void gui_init(void)
     windows[WIN_SETTINGS].x = 300;
     windows[WIN_SETTINGS].y = 120;
     windows[WIN_SETTINGS].w = 360;
-    windows[WIN_SETTINGS].h = 400; /* Increased H for more options */
+    windows[WIN_SETTINGS].h = 500; /* Increased H for more options */
     windows[WIN_SETTINGS].visible = 0;
     windows[WIN_SETTINGS].maximized = 0;
     str_copy(windows[WIN_SETTINGS].title, "Settings", WIN_MAX_TITLE);
@@ -267,21 +331,60 @@ void gui_init(void)
     windows[WIN_SYSINFO].maximized = 0;
     str_copy(windows[WIN_SYSINFO].title, "System Info", WIN_MAX_TITLE);
 
+    /* Clock */
+    windows[WIN_CLOCK].x = 420;
+    windows[WIN_CLOCK].y = 180;
+    windows[WIN_CLOCK].w = 240;
+    windows[WIN_CLOCK].h = 180;
+    windows[WIN_CLOCK].visible = 0;
+    windows[WIN_CLOCK].maximized = 0;
+    str_copy(windows[WIN_CLOCK].title, "Clock", WIN_MAX_TITLE);
+
+    /* Paint */
+    windows[WIN_PAINT].x = 180;
+    windows[WIN_PAINT].y = 140;
+    windows[WIN_PAINT].w = 380;
+    windows[WIN_PAINT].h = 300;
+    windows[WIN_PAINT].visible = 0;
+    windows[WIN_PAINT].maximized = 0;
+    str_copy(windows[WIN_PAINT].title, "Paint", WIN_MAX_TITLE);
+
+    /* Terminal */
+    windows[WIN_TERMINAL].x = 120;
+    windows[WIN_TERMINAL].y = 200;
+    windows[WIN_TERMINAL].w = 520;
+    windows[WIN_TERMINAL].h = 280;
+    windows[WIN_TERMINAL].visible = 0;
+    windows[WIN_TERMINAL].maximized = 0;
+    str_copy(windows[WIN_TERMINAL].title, "Terminal", WIN_MAX_TITLE);
+
     /* Z-order */
     win_order[0] = WIN_SYSINFO;
     win_order[1] = WIN_SETTINGS;
     win_order[2] = WIN_NOTEPAD;
-    win_order[3] = WIN_FILE_MGR;
+    win_order[3] = WIN_PAINT;
+    win_order[4] = WIN_CLOCK;
+    win_order[5] = WIN_TERMINAL;
+    win_order[6] = WIN_FILE_MGR;
     active_win = WIN_FILE_MGR;
 
     notepad_len = 0;
     notepad_buf[0] = '\0';
     str_copy(notepad_filename, "untitled.txt", WIN_MAX_TITLE);
     notepad_active = 0;
+    term_len = 0;
+    term_buf[0] = '\0';
+    term_append_str(TERM_PROMPT);
+    term_active = 0;
     start_menu_open = 0;
 
     fm_current_dir = vfs_find("Desktop", 0);
     if (fm_current_dir < 0) fm_current_dir = vfs_root();
+
+    /* Init paint canvas to white */
+    for (int i = 0; i < PAINT_W * PAINT_H; i++) {
+        paint_canvas[i] = 0xFFFFFFFF;
+    }
     
     gui_sync_desktop();
     gui_refresh_file_list();
@@ -321,6 +424,7 @@ static void gui_bring_to_front(int win_id)
     }
     active_win = win_id;
     notepad_active = (win_id == WIN_NOTEPAD && windows[WIN_NOTEPAD].visible);
+    term_active = (win_id == WIN_TERMINAL && windows[WIN_TERMINAL].visible);
 }
 
 /* ---- Drawing ---- */
@@ -430,12 +534,19 @@ static void gui_draw_taskbar(void)
     }
 
     /* Clock (right side) */
-    char time_str[6]; /* "HH:MM\0" */
+    char time_str[9]; /* "HH:MM" or "HH:MM:SS" */
     int_to_2digit(clock_hour, time_str);
     time_str[2] = ':';
     int_to_2digit(clock_minute, time_str + 3);
-    time_str[5] = '\0';
-    int clock_x = SCREEN_W - 90;
+    if (show_seconds) {
+        time_str[5] = ':';
+        int_to_2digit(clock_second, time_str + 6);
+        time_str[8] = '\0';
+    } else {
+        time_str[5] = '\0';
+    }
+    int text_len = show_seconds ? 8 : 5;
+    int clock_x = SCREEN_W - (text_len * 16) - 10;
     int clock_y = SCREEN_H - TASKBAR_H + 8;
     gfx_draw_string(clock_x, clock_y, time_str, TASKBAR_TEXT, TASKBAR_COLOR);
 }
@@ -612,7 +723,7 @@ static void gui_draw_settings(void)
     int y = win->y + WIN_TITLEBAR_H + 16;
 
     /* Title */
-    gfx_draw_string(x + 16, y, "Clock Settings", 0x00000000, WIN_BG_COLOR);
+    gfx_draw_string(x + 16, y, "Clock Settings", 0xFF000000, WIN_BG_COLOR);
     y += 30;
 
     /* Current time display */
@@ -622,18 +733,18 @@ static void gui_draw_settings(void)
     int_to_2digit(clock_minute, time_str + 3);
     time_str[5] = '\0';
 
-    fb_draw_rect(x + 100, y - 4, 100, 28, 0x00FFFFFF);
-    gfx_draw_string(x + 120, y, time_str, 0x00000000, 0x00FFFFFF);
+    fb_draw_rect(x + 100, y - 4, 100, 28, 0xFFFFFFFF);
+    gfx_draw_string(x + 120, y, time_str, 0xFF000000, 0xFFFFFFFF);
     y += 40;
 
     /* Hour controls */
-    gfx_draw_string(x + 16, y + 4, "Hour:", 0x00000000, WIN_BG_COLOR);
+    gfx_draw_string(x + 16, y + 4, "Hour:", 0xFF000000, WIN_BG_COLOR);
     /* [-] button */
-    fb_draw_rect(x + 120, y, 36, 24, 0x00506090);
-    gfx_draw_string(x + 130, y + 4, "-", 0x00FFFFFF, 0x00506090);
+    fb_draw_rect(x + 120, y, 36, 24, 0xFF506090);
+    gfx_draw_string(x + 130, y + 4, "-", 0xFFFFFFFF, 0xFF506090);
     /* [+] button */
-    fb_draw_rect(x + 170, y, 36, 24, 0x00506090);
-    gfx_draw_string(x + 178, y + 4, "+", 0x00FFFFFF, 0x00506090);
+    fb_draw_rect(x + 170, y, 36, 24, 0xFF506090);
+    gfx_draw_string(x + 178, y + 4, "+", 0xFFFFFFFF, 0xFF506090);
     y += 36;
 
     /* Minute controls */
@@ -663,6 +774,53 @@ static void gui_draw_settings(void)
     gfx_draw_string(x + 16, y + 4, "Transparency:", 0xFF000000, WIN_BG_COLOR);
     fb_draw_rect(x + 140, y, 60, 24, transparency_enabled ? 0xFF40A040 : 0xFF804040);
     gfx_draw_string(x + 145, y + 4, transparency_enabled ? "ON" : "OFF", 0xFFFFFFFF, transparency_enabled ? 0xFF40A040 : 0xFF804040);
+
+    y += 40;
+
+    /* Show seconds toggle */
+    gfx_draw_string(x + 16, y + 4, "Show Seconds:", 0xFF000000, WIN_BG_COLOR);
+    fb_draw_rect(x + 140, y, 60, 24, show_seconds ? 0xFF40A040 : 0xFF804040);
+    gfx_draw_string(x + 145, y + 4, show_seconds ? "ON" : "OFF", 0xFFFFFFFF, show_seconds ? 0xFF40A040 : 0xFF804040);
+
+    y += 36;
+
+    /* Mouse speed */
+    gfx_draw_string(x + 16, y + 4, "Mouse Speed:", 0xFF000000, WIN_BG_COLOR);
+    fb_draw_rect(x + 140, y, 36, 24, 0xFF506090);
+    gfx_draw_string(x + 150, y + 4, "-", 0xFFFFFFFF, 0xFF506090);
+    fb_draw_rect(x + 220, y, 36, 24, 0xFF506090);
+    gfx_draw_string(x + 230, y + 4, "+", 0xFFFFFFFF, 0xFF506090);
+    /* Value */
+    char ms[4] = { '0' + mouse_speed, 'x', '\0', '\0' };
+    gfx_draw_string(x + 185, y + 4, ms, 0xFF000000, WIN_BG_COLOR);
+
+    y += 36;
+
+    /* Cursor size */
+    gfx_draw_string(x + 16, y + 4, "Cursor Size:", 0xFF000000, WIN_BG_COLOR);
+    fb_draw_rect(x + 140, y, 80, 24, 0xFF606060);
+    gfx_draw_string(x + 148, y + 4, cursor_scale == 1 ? "Small" : "Large", 0xFFFFFFFF, 0xFF606060);
+
+    y += 36;
+
+    /* Cursor style */
+    gfx_draw_string(x + 16, y + 4, "Cursor Style:", 0xFF000000, WIN_BG_COLOR);
+    fb_draw_rect(x + 140, y, 36, 24, 0xFF506090);
+    gfx_draw_string(x + 150, y + 4, "-", 0xFFFFFFFF, 0xFF506090);
+    fb_draw_rect(x + 220, y, 36, 24, 0xFF506090);
+    gfx_draw_string(x + 230, y + 4, "+", 0xFFFFFFFF, 0xFF506090);
+    gfx_draw_string(x + 180, y + 4, cursor_style_labels[cursor_style], 0xFF000000, WIN_BG_COLOR);
+
+    y += 36;
+
+    /* Brush size */
+    gfx_draw_string(x + 16, y + 4, "Brush Size:", 0xFF000000, WIN_BG_COLOR);
+    fb_draw_rect(x + 140, y, 36, 24, 0xFF506090);
+    gfx_draw_string(x + 150, y + 4, "-", 0xFFFFFFFF, 0xFF506090);
+    fb_draw_rect(x + 220, y, 36, 24, 0xFF506090);
+    gfx_draw_string(x + 230, y + 4, "+", 0xFFFFFFFF, 0xFF506090);
+    char bs[4] = { '0' + paint_brush, '\0', '\0', '\0' };
+    gfx_draw_string(x + 190, y + 4, bs, 0xFF000000, WIN_BG_COLOR);
 }
 
 static void gui_draw_sysinfo(void)
@@ -699,6 +857,110 @@ static void gui_draw_sysinfo(void)
     gfx_draw_string(x, y, freq_str, 0xFF404040, WIN_BG_COLOR);
 }
 
+static void gui_draw_clock(void)
+{
+    gui_window_t *win = &windows[WIN_CLOCK];
+    if (!win->visible) return;
+
+    int x = win->x + 20;
+    int y = win->y + WIN_TITLEBAR_H + 24;
+
+    char time_str[9];
+    int_to_2digit(clock_hour, time_str);
+    time_str[2] = ':';
+    int_to_2digit(clock_minute, time_str + 3);
+    time_str[5] = ':';
+    int_to_2digit(clock_second, time_str + 6);
+    time_str[8] = '\0';
+
+    gfx_draw_string(x, y, time_str, 0xFF000000, WIN_BG_COLOR);
+    y += 28;
+    gfx_draw_string(x, y, show_seconds ? "Seconds: ON" : "Seconds: OFF", 0xFF404040, WIN_BG_COLOR);
+}
+
+static void gui_draw_paint(void)
+{
+    gui_window_t *win = &windows[WIN_PAINT];
+    if (!win->visible) return;
+
+    int toolbar_x = win->x + 8;
+    int toolbar_y = win->y + WIN_TITLEBAR_H + 8;
+    int toolbar_w = win->w - 16;
+
+    /* Toolbar background */
+    fb_draw_rect(toolbar_x, toolbar_y, toolbar_w, 28, 0xFFD0D0D0);
+
+    /* Color palette */
+    static const unsigned int palette[] = {
+        0xFF000000, 0xFFFFFFFF, 0xFFFF0000, 0xFF00FF00, 0xFF0000FF, 0xFFFFFF00
+    };
+    int px = toolbar_x + 6;
+    int py = toolbar_y + 4;
+    for (int i = 0; i < 6; i++) {
+        fb_draw_rect(px + i * 22, py, 18, 18, palette[i]);
+        if (paint_color == palette[i]) {
+            fb_draw_rect(px + i * 22 - 2, py - 2, 22, 22, 0xFF202020);
+        }
+    }
+
+    /* Clear button */
+    fb_draw_rect(toolbar_x + toolbar_w - 60, toolbar_y + 4, 52, 20, 0xFF804040);
+    gfx_draw_string(toolbar_x + toolbar_w - 54, toolbar_y + 6, "Clear", 0xFFFFFFFF, 0xFF804040);
+
+    /* Canvas */
+    int canvas_x = win->x + 12;
+    int canvas_y = win->y + WIN_TITLEBAR_H + 44;
+    fb_draw_rect(canvas_x - 2, canvas_y - 2, PAINT_W + 4, PAINT_H + 4, 0xFF404040);
+
+    for (int cy = 0; cy < PAINT_H; cy++) {
+        int row = cy * PAINT_W;
+        for (int cx = 0; cx < PAINT_W; cx++) {
+            fb_draw_pixel(canvas_x + cx, canvas_y + cy, paint_canvas[row + cx]);
+        }
+    }
+}
+
+static void gui_draw_terminal(void)
+{
+    gui_window_t *win = &windows[WIN_TERMINAL];
+    if (!win->visible) return;
+
+    int x = win->x + 8;
+    int y = win->y + WIN_TITLEBAR_H + 8;
+    int w = win->w - 16;
+    int h = win->h - WIN_TITLEBAR_H - 16;
+
+    fb_draw_rect(x, y, w, h, 0xFF000000);
+
+    int cx = x + 4;
+    int cy = y + 4;
+    int max_x = x + w - 4;
+    int max_y = y + h - 20;
+
+    for (int i = 0; i < term_len; i++) {
+        char c = term_buf[i];
+        if (c == '\n' || cx + 16 > max_x) {
+            cx = x + 4;
+            cy += 16;
+            if (cy > max_y) break;
+            if (c == '\n') continue;
+        }
+        gfx_draw_char(cx, cy, c, 0xFF00FF00, 0xFF000000);
+        cx += 16;
+    }
+
+    /* Cursor */
+    if (term_active) {
+        if (cx + 2 > max_x) {
+            cx = x + 4;
+            cy += 16;
+        }
+        if (cy <= max_y) {
+            fb_draw_rect(cx, cy, 2, 16, 0xFF00FF00);
+        }
+    }
+}
+
 static void gui_draw_start_menu(void)
 {
     if (!start_menu_open) return;
@@ -722,7 +984,8 @@ static void gui_draw_start_menu(void)
                      mouse_y >= iy && mouse_y < iy + MENU_ITEM_H);
         unsigned int bg = hover ? MENU_HOVER : MENU_BG;
         fb_draw_rect(MENU_X + 2, iy, MENU_W - 4, MENU_ITEM_H, bg);
-        gfx_draw_string(MENU_X + 12, iy + 4, menu_labels[i], MENU_TEXT, bg);
+        gfx_draw_string_transparent(MENU_X + 13, iy + 5, menu_labels[i], MENU_TEXT_SHADOW);
+        gfx_draw_string_transparent(MENU_X + 12, iy + 4, menu_labels[i], MENU_TEXT);
     }
 }
 
@@ -753,7 +1016,7 @@ static void gui_draw_context_menu(void)
                      mouse_y >= iy - 4 && mouse_y < iy + 24);
         unsigned int bg = hover ? CONTEXT_HOVER : CONTEXT_BG;
         fb_draw_rect(mx + 2, iy - 4, CONTEXT_W - 4, 28, bg);
-        gfx_draw_string(mx + 12, iy + 4, context_menu_items[i], COLOR_WHITE, bg);
+        gfx_draw_string_transparent(mx + 12, iy + 4, context_menu_items[i], CONTEXT_TEXT);
     }
 }
 
@@ -795,45 +1058,109 @@ static void gui_draw_rename_dialog(void)
 
 static void gui_draw_mouse(void)
 {
-    /* Arrow cursor with better shape */
-    /* Row widths for a nicer arrow: */
-    static const int cursor_data[16] = {
-        1, 2, 3, 4, 5, 6, 7, 8, 5, 5, 3, 3, 2, 2, 1, 1
-    };
+    int scale = cursor_scale;
+    int sx = mouse_x;
+    int sy = mouse_y;
 
-    for (int row = 0; row < 16; row++) {
-        int w = cursor_data[row];
-        int sx = mouse_x;
-        int sy = mouse_y + row;
-        /* Outline top */
-        if (row == 0) {
-            for (int c = 0; c < w; c++) fb_draw_pixel(sx + c, sy, MOUSE_OUTLINE);
-            continue;
+    if (cursor_style == 0) {
+        /* Windows-like arrow cursor (16x16), with centered tail */
+        static const unsigned short outline[16] = {
+            0x8000, 0xC000, 0xE000, 0xF000,
+            0xF800, 0xFC00, 0xFE00, 0xFF00,
+            0xFF80, 0xFFC0, 0xFFE0, 0xFFF0,
+            0x0000, 0x0000, 0x0000, 0x0000
+        };
+        static const unsigned short fill[16] = {
+            0x0000, 0x8000, 0xC000, 0xE000,
+            0xF000, 0xF800, 0xFC00, 0xFE00,
+            0xFF00, 0xFF80, 0xFFC0, 0xFFE0,
+            0x0000, 0x0000, 0x0000, 0x0000
+        };
+
+        /* Shadow pass (offset 1,1) */
+        for (int row = 0; row < 16; row++) {
+            for (int col = 0; col < 16; col++) {
+                unsigned short bit = (unsigned short)(1u << (15 - col));
+                if (outline[row] & bit) {
+                    int px = sx + col * scale + 1;
+                    int py = sy + row * scale + 1;
+                    for (int dy = 0; dy < scale; dy++) {
+                        for (int dx = 0; dx < scale; dx++) {
+                            fb_draw_pixel(px + dx, py + dy, MOUSE_SHADOW);
+                        }
+                    }
+                }
+            }
         }
-        /* Left edge */
-        fb_draw_pixel(sx, sy, MOUSE_OUTLINE);
-        /* Fill */
-        for (int c = 1; c < w - 1; c++) {
-            fb_draw_pixel(sx + c, sy, MOUSE_COLOR);
+
+        /* Outline pass */
+        for (int row = 0; row < 16; row++) {
+            for (int col = 0; col < 16; col++) {
+                unsigned short bit = (unsigned short)(1u << (15 - col));
+                if (outline[row] & bit) {
+                    int px = sx + col * scale;
+                    int py = sy + row * scale;
+                    for (int dy = 0; dy < scale; dy++) {
+                        for (int dx = 0; dx < scale; dx++) {
+                            fb_draw_pixel(px + dx, py + dy, MOUSE_OUTLINE);
+                        }
+                    }
+                }
+            }
         }
-        /* Right edge */
-        if (w > 1) fb_draw_pixel(sx + w - 1, sy, MOUSE_OUTLINE);
-        /* Bottom outline on last row */
-        if (row == 15) {
-            for (int c = 0; c < w; c++) fb_draw_pixel(sx + c, sy, MOUSE_OUTLINE);
+
+        /* Fill pass */
+        for (int row = 0; row < 16; row++) {
+            for (int col = 0; col < 16; col++) {
+                unsigned short bit = (unsigned short)(1u << (15 - col));
+                if (fill[row] & bit) {
+                    int px = sx + col * scale;
+                    int py = sy + row * scale;
+                    for (int dy = 0; dy < scale; dy++) {
+                        for (int dx = 0; dx < scale; dx++) {
+                            fb_draw_pixel(px + dx, py + dy, MOUSE_COLOR);
+                        }
+                    }
+                }
+            }
         }
-    }
-    /* Left edge outline */
-    for (int row = 0; row < 16; row++) {
-        fb_draw_pixel(mouse_x, mouse_y + row, MOUSE_OUTLINE);
+    } else if (cursor_style == 1) {
+        /* Crosshair */
+        int size = 16 * scale;
+        int cx = sx + 8 * scale;
+        int cy = sy + 8 * scale;
+        for (int i = -8 * scale; i <= 8 * scale; i++) {
+            fb_draw_pixel(cx + i, cy, MOUSE_OUTLINE);
+            fb_draw_pixel(cx, cy + i, MOUSE_OUTLINE);
+        }
+        for (int i = -6 * scale; i <= 6 * scale; i++) {
+            fb_draw_pixel(cx + i, cy, MOUSE_COLOR);
+            fb_draw_pixel(cx, cy + i, MOUSE_COLOR);
+        }
+        (void)size;
+    } else {
+        /* I-Beam */
+        int cx = sx + 7 * scale;
+        int top = sy + 2 * scale;
+        int bottom = sy + 14 * scale;
+        for (int i = 0; i < 8 * scale; i++) {
+            fb_draw_pixel(cx + i, top, MOUSE_OUTLINE);
+            fb_draw_pixel(cx + i, bottom, MOUSE_OUTLINE);
+        }
+        for (int y = top; y <= bottom; y++) {
+            fb_draw_pixel(cx + 4 * scale, y, MOUSE_OUTLINE);
+        }
+        for (int y = top + 1; y <= bottom - 1; y++) {
+            fb_draw_pixel(cx + 4 * scale, y, MOUSE_COLOR);
+        }
     }
 }
 
 /* ---- Input handling ---- */
 static void gui_handle_mouse_move(int dx, int dy)
 {
-    mouse_x += dx;
-    mouse_y += dy;
+    mouse_x += dx * mouse_speed;
+    mouse_y += dy * mouse_speed;
     if (mouse_x < 0) mouse_x = 0;
     if (mouse_y < 0) mouse_y = 0;
     if (mouse_x >= SCREEN_W) mouse_x = SCREEN_W - 1;
@@ -844,6 +1171,93 @@ static void gui_handle_mouse_move(int dx, int dy)
 static int hit_rect(int px, int py, int rx, int ry, int rw, int rh)
 {
     return (px >= rx && px < rx + rw && py >= ry && py < ry + rh);
+}
+
+static void gui_cursor_restore(void)
+{
+    if (!cursor_valid) return;
+    framebuffer_t *fbp = fb_get();
+    unsigned int *vram = (unsigned int *)fbp->buffer;
+    int cursor_w = 16 * cursor_scale + 1;
+    int cursor_h = 16 * cursor_scale + 1;
+    if (cursor_w > CURSOR_MAX) cursor_w = CURSOR_MAX;
+    if (cursor_h > CURSOR_MAX) cursor_h = CURSOR_MAX;
+
+    for (int y = 0; y < cursor_h; y++) {
+        int py = cursor_old_y + y;
+        if (py < 0 || py >= (int)fbp->height) continue;
+        for (int x = 0; x < cursor_w; x++) {
+            int px = cursor_old_x + x;
+            if (px < 0 || px >= (int)fbp->width) continue;
+            vram[py * fbp->width + px] = cursor_under[y * CURSOR_MAX + x];
+        }
+    }
+}
+
+static void gui_cursor_save(void)
+{
+    framebuffer_t *fbp = fb_get();
+    unsigned int *vram = (unsigned int *)fbp->buffer;
+    int cursor_w = 16 * cursor_scale + 1;
+    int cursor_h = 16 * cursor_scale + 1;
+    if (cursor_w > CURSOR_MAX) cursor_w = CURSOR_MAX;
+    if (cursor_h > CURSOR_MAX) cursor_h = CURSOR_MAX;
+
+    for (int y = 0; y < cursor_h; y++) {
+        int py = mouse_y + y;
+        for (int x = 0; x < cursor_w; x++) {
+            int px = mouse_x + x;
+            unsigned int val = 0;
+            if (px >= 0 && px < (int)fbp->width && py >= 0 && py < (int)fbp->height) {
+                val = vram[py * fbp->width + px];
+            }
+            cursor_under[y * CURSOR_MAX + x] = val;
+        }
+    }
+
+    cursor_old_x = mouse_x;
+    cursor_old_y = mouse_y;
+    cursor_valid = 1;
+}
+
+static void gui_draw_mouse_overlay(void)
+{
+    gui_cursor_restore();
+    gui_cursor_save();
+    gui_draw_mouse();
+}
+
+static int gui_paint_draw_at(int px, int py)
+{
+    gui_window_t *win = &windows[WIN_PAINT];
+    if (!win->visible) return 0;
+
+    int canvas_x = win->x + 12;
+    int canvas_y = win->y + WIN_TITLEBAR_H + 44;
+    if (!hit_rect(px, py, canvas_x, canvas_y, PAINT_W, PAINT_H)) return 0;
+
+    int cx = px - canvas_x;
+    int cy = py - canvas_y;
+    int half = paint_brush / 2;
+
+    for (int by = -half; by <= half; by++) {
+        for (int bx = -half; bx <= half; bx++) {
+            int tx = cx + bx;
+            int ty = cy + by;
+            if (tx >= 0 && tx < PAINT_W && ty >= 0 && ty < PAINT_H) {
+                paint_canvas[ty * PAINT_W + tx] = paint_color;
+                if (!gui_use_backbuffer) {
+                    fb_draw_pixel(canvas_x + tx, canvas_y + ty, paint_color);
+                }
+            }
+        }
+    }
+
+    if (!gui_use_backbuffer) {
+        cursor_valid = 0;
+    }
+
+    return 1;
 }
 
 static void gui_handle_right_click(void)
@@ -935,6 +1349,9 @@ static void gui_handle_click(void)
                     else if (i == 1) { windows[WIN_NOTEPAD].visible = 1; gui_bring_to_front(WIN_NOTEPAD); }
                     else if (i == 2) { windows[WIN_SETTINGS].visible = 1; gui_bring_to_front(WIN_SETTINGS); }
                     else if (i == 3) { windows[WIN_SYSINFO].visible = 1; gui_bring_to_front(WIN_SYSINFO); }
+                    else if (i == 4) { windows[WIN_CLOCK].visible = 1; gui_bring_to_front(WIN_CLOCK); }
+                    else if (i == 5) { windows[WIN_PAINT].visible = 1; gui_bring_to_front(WIN_PAINT); }
+                    else if (i == 6) { windows[WIN_TERMINAL].visible = 1; gui_bring_to_front(WIN_TERMINAL); }
                     return;
                 }
             }
@@ -1021,6 +1438,7 @@ static void gui_handle_click(void)
             if (hit_rect(mouse_x, mouse_y, win->x + win->w - 25, win->y + 3, 20, 18)) {
                 win->visible = 0;
                 notepad_active = 0;
+                term_active = 0;
                 /* Find next visible window */
                 active_win = -1;
                 for (int j = win_count - 1; j >= 0; j--) {
@@ -1057,7 +1475,12 @@ static void gui_handle_click(void)
             /* Settings-specific button handling */
             if (wid == WIN_SETTINGS) {
                 int sx = win->x;
-                int sy = win->y + WIN_TITLEBAR_H + 16 + 30 + 40; /* "Hour:" row y */
+                int sy = win->y + WIN_TITLEBAR_H + 16;
+
+                /* Skip title row */
+                sy += 30;
+                /* Skip time display row */
+                sy += 40;
 
                 /* Hour [-] */
                 if (hit_rect(mouse_x, mouse_y, sx + 120, sy, 36, 24)) {
@@ -1080,7 +1503,8 @@ static void gui_handle_click(void)
                     clock_minute = (clock_minute + 1) % 60;
                     return;
                 }
-                sy += 48 + 24; /* Move to Theme row */
+                sy += 48; /* Move to Desktop Theme label */
+                sy += 24; /* Move to theme buttons row */
                 for (int i = 0; i < 4; i++) {
                     if (hit_rect(mouse_x, mouse_y, sx + 16 + i * 40, sy, 32, 24)) {
                         unsigned int themes[] = { 0x206080, 0x602040, 0x206040, 0x303030 };
@@ -1091,6 +1515,46 @@ static void gui_handle_click(void)
                 sy += 40; /* Move to Transparency row */
                 if (hit_rect(mouse_x, mouse_y, sx + 140, sy, 60, 24)) {
                     transparency_enabled = !transparency_enabled;
+                    return;
+                }
+                sy += 40; /* Move to Show Seconds row */
+                if (hit_rect(mouse_x, mouse_y, sx + 140, sy, 60, 24)) {
+                    show_seconds = !show_seconds;
+                    return;
+                }
+                sy += 36; /* Mouse speed row */
+                if (hit_rect(mouse_x, mouse_y, sx + 140, sy, 36, 24)) {
+                    if (mouse_speed > 1) mouse_speed--;
+                    return;
+                }
+                if (hit_rect(mouse_x, mouse_y, sx + 220, sy, 36, 24)) {
+                    if (mouse_speed < 3) mouse_speed++;
+                    return;
+                }
+                sy += 36; /* Cursor size row */
+                if (hit_rect(mouse_x, mouse_y, sx + 140, sy, 80, 24)) {
+                    cursor_scale = (cursor_scale == 1) ? 2 : 1;
+                    cursor_valid = 0;
+                    return;
+                }
+                sy += 36; /* Cursor style row */
+                if (hit_rect(mouse_x, mouse_y, sx + 140, sy, 36, 24)) {
+                    cursor_style = (cursor_style + CURSOR_STYLE_COUNT - 1) % CURSOR_STYLE_COUNT;
+                    cursor_valid = 0;
+                    return;
+                }
+                if (hit_rect(mouse_x, mouse_y, sx + 220, sy, 36, 24)) {
+                    cursor_style = (cursor_style + 1) % CURSOR_STYLE_COUNT;
+                    cursor_valid = 0;
+                    return;
+                }
+                sy += 36; /* Brush size row */
+                if (hit_rect(mouse_x, mouse_y, sx + 140, sy, 36, 24)) {
+                    if (paint_brush > 1) paint_brush--;
+                    return;
+                }
+                if (hit_rect(mouse_x, mouse_y, sx + 220, sy, 36, 24)) {
+                    if (paint_brush < 4) paint_brush++;
                     return;
                 }
             }
@@ -1170,6 +1634,39 @@ static void gui_handle_click(void)
                 }
             }
 
+            /* Paint button handling */
+            if (wid == WIN_PAINT) {
+                int toolbar_x = win->x + 8;
+                int toolbar_y = win->y + WIN_TITLEBAR_H + 8;
+                int toolbar_w = win->w - 16;
+
+                /* Palette clicks */
+                static const unsigned int palette[] = {
+                    0xFF000000, 0xFFFFFFFF, 0xFFFF0000, 0xFF00FF00, 0xFF0000FF, 0xFFFFFF00
+                };
+                int px = toolbar_x + 6;
+                int py = toolbar_y + 4;
+                for (int i = 0; i < 6; i++) {
+                    if (hit_rect(mouse_x, mouse_y, px + i * 22, py, 18, 18)) {
+                        paint_color = palette[i];
+                        return;
+                    }
+                }
+
+                /* Clear button */
+                if (hit_rect(mouse_x, mouse_y, toolbar_x + toolbar_w - 60, toolbar_y + 4, 52, 20)) {
+                    for (int i = 0; i < PAINT_W * PAINT_H; i++) {
+                        paint_canvas[i] = 0xFFFFFFFF;
+                    }
+                    return;
+                }
+
+                /* Canvas click */
+                if (gui_paint_draw_at(mouse_x, mouse_y)) {
+                    return;
+                }
+            }
+
             return;
         }
     }
@@ -1177,11 +1674,16 @@ static void gui_handle_click(void)
     /* Clicked on desktop background */
     start_menu_open = 0;
     notepad_active = 0;
+    term_active = 0;
 }
 
 /* ---- Render all ---- */
 static void gui_render(void)
 {
+    if (!gui_use_backbuffer) {
+        cursor_valid = 0;
+    }
+
     gui_draw_desktop();
     gui_draw_icons();
 
@@ -1193,13 +1695,21 @@ static void gui_render(void)
         else if (wid == WIN_NOTEPAD) gui_draw_notepad();
         else if (wid == WIN_SETTINGS) gui_draw_settings();
         else if (wid == WIN_SYSINFO) gui_draw_sysinfo();
+        else if (wid == WIN_CLOCK) gui_draw_clock();
+        else if (wid == WIN_PAINT) gui_draw_paint();
+        else if (wid == WIN_TERMINAL) gui_draw_terminal();
     }
 
     if (rename_dialog_open) gui_draw_rename_dialog();
     gui_draw_taskbar();
     gui_draw_start_menu();
     if (context_menu_open) gui_draw_context_menu();
-    gui_draw_mouse();
+    if (gui_use_backbuffer) {
+        gui_draw_mouse();
+        fb_present();
+    } else {
+        gui_draw_mouse_overlay();
+    }
 }
 
 /* ---- Main loop ---- */
@@ -1209,6 +1719,7 @@ void gui_run(void)
 
     while (gui_running) {
         int needs_render = 0;
+        int cursor_only = 0;
         static int btn_was_down = 0;
 
         /* Advance clock */
@@ -1227,7 +1738,8 @@ void gui_run(void)
             if (arrow == 108) gui_handle_mouse_move(0, 8);
             if (arrow == 105) gui_handle_mouse_move(-8, 0);
             if (arrow == 106) gui_handle_mouse_move(8, 0);
-            needs_render = 1;
+            if (gui_use_backbuffer) needs_render = 1;
+            else cursor_only = 1;
         }
 
         /* CTRL = left click */
@@ -1239,7 +1751,14 @@ void gui_run(void)
 
         if (dx != 0 || dy != 0) {
             gui_handle_mouse_move(dx, dy);
-            needs_render = 1;
+            if (gui_use_backbuffer) needs_render = 1;
+            else cursor_only = 1;
+        }
+
+        if (btn & 1) {
+            if (gui_paint_draw_at(mouse_x, mouse_y)) {
+                if (gui_use_backbuffer) needs_render = 1;
+            }
         }
 
         /* Mouse button press */
@@ -1300,6 +1819,29 @@ void gui_run(void)
                 }
                 needs_render = 1;
             }
+            /* If terminal is active, send keystrokes to it */
+            else if (term_active && windows[WIN_TERMINAL].visible) {
+                if (key == 0x0C) { /* Ctrl+L */
+                    term_len = 0;
+                    term_buf[0] = '\0';
+                    term_append_str(TERM_PROMPT);
+                } else if (key == 0x08 || key == 127) {
+                    int last_nl = 0;
+                    for (int i = term_len - 1; i >= 0; i--) {
+                        if (term_buf[i] == '\n') { last_nl = i + 1; break; }
+                    }
+                    if (term_len > last_nl + TERM_PROMPT_LEN) {
+                        term_len--;
+                        term_buf[term_len] = '\0';
+                    }
+                } else if (key == '\r' || key == '\n') {
+                    term_append_char('\n');
+                    term_append_str(TERM_PROMPT);
+                } else if (key >= 32 && key < 127) {
+                    term_append_char((char)key);
+                }
+                needs_render = 1;
+            }
             /* If notepad is active, send keystrokes to it */
             else if (notepad_active && windows[WIN_NOTEPAD].visible) {
                 if (key == 0x08 || key == 127) {
@@ -1336,9 +1878,13 @@ void gui_run(void)
 
         if (needs_render) {
             gui_render();
+        } else if (cursor_only && !gui_use_backbuffer) {
+            gui_draw_mouse_overlay();
         }
 
         /* Small delay */
         for (volatile int i = 0; i < 1000; i++) {}
     }
+
+    fb_use_backbuffer(0);
 }

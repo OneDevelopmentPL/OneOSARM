@@ -32,6 +32,12 @@ void fb_draw_hline(int x, int y, int length, unsigned int color);
 /* Draw vertical line */
 void fb_draw_vline(int x, int y, int length, unsigned int color);
 
+/* Present backbuffer to screen */
+void fb_present(void);
+
+/* Enable/disable backbuffer rendering */
+void fb_use_backbuffer(int enable);
+
 /* Color definitions (32-bit BGRX8888) */
 #define COLOR_BLACK     0xFF000000
 #define COLOR_WHITE     0xFFFFFFFF

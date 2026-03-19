@@ -132,6 +132,9 @@ void terminal_render(void)
     fb_draw_rect(terminal.cursor_x * CHAR_W, terminal.cursor_y * CHAR_H, CHAR_W, CHAR_H, COLOR_LIGHT_GRAY);
     terminal.old_cursor_x = terminal.cursor_x;
     terminal.old_cursor_y = terminal.cursor_y;
+
+    /* Present final frame to screen */
+    fb_present();
 }
 
 void terminal_set_mouse(int x, int y)
@@ -154,4 +157,3 @@ void terminal_handle_input(uint8_t key)
         terminal_putchar('\n');
     }
 }
-

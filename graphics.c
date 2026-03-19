@@ -152,6 +152,24 @@ void gfx_draw_char(int x, int y, char c, unsigned int fg_color, unsigned int bg_
     }
 }
 
+void gfx_draw_char_transparent(int x, int y, char c, unsigned int fg_color)
+{
+    unsigned char *glyph = (unsigned char *)font8x8[(unsigned char)c];
+    asm volatile("dmb sy" ::: "memory");
+
+    for (int row = 0; row < 8; row++) {
+        unsigned char byte = glyph[row];
+        for (int col = 0; col < 8; col++) {
+            if (byte & (1 << col)) {
+                fb_draw_pixel(x + col * 2,     y + row * 2,     fg_color);
+                fb_draw_pixel(x + col * 2 + 1, y + row * 2,     fg_color);
+                fb_draw_pixel(x + col * 2,     y + row * 2 + 1, fg_color);
+                fb_draw_pixel(x + col * 2 + 1, y + row * 2 + 1, fg_color);
+            }
+        }
+    }
+}
+
 void gfx_draw_string(int x, int y, const char *str, unsigned int fg_color, unsigned int bg_color)
 {
     int pos_x = x;
@@ -162,6 +180,22 @@ void gfx_draw_string(int x, int y, const char *str, unsigned int fg_color, unsig
             y += 16;
         } else {
             gfx_draw_char(pos_x, y, *str, fg_color, bg_color);
+            pos_x += 16;
+        }
+        str++;
+    }
+}
+
+void gfx_draw_string_transparent(int x, int y, const char *str, unsigned int fg_color)
+{
+    int pos_x = x;
+
+    while (*str) {
+        if (*str == '\n') {
+            pos_x = x;
+            y += 16;
+        } else {
+            gfx_draw_char_transparent(pos_x, y, *str, fg_color);
             pos_x += 16;
         }
         str++;

@@ -33,7 +33,10 @@ int main(void)
     uart_init();
 
     /* Initialize memory management */
-    mem_init((void *)0x40200000, 0x100000);  /* 1MB heap at 0x40200000 */
+    extern char _end;
+    unsigned long heap_start = ((unsigned long)&_end + 7UL) & ~7UL;
+    unsigned long heap_size = 0x00400000;  /* 4MB heap */
+    mem_init((void *)heap_start, heap_size);
 
     /* Initialize keyboard (UART fallback) */
     keyboard_init();
@@ -113,7 +116,7 @@ int main(void)
                         terminal_render();
                     } else if (strcmp(cmd_buffer, "mem") == 0) {
                         terminal_puts("Memory Info:\n");
-                        terminal_puts("  Heap: 1MB\n");
+                        terminal_puts("  Heap: 4MB\n");
                         terminal_render();
                     } else if (strcmp(cmd_buffer, "clear") == 0) {
                         terminal_clear();

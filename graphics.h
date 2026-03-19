@@ -14,6 +14,12 @@ void gfx_draw_char(int x, int y, char c, unsigned int fg_color, unsigned int bg_
 /* Draw string */
 void gfx_draw_string(int x, int y, const char *str, unsigned int fg_color, unsigned int bg_color);
 
+/* Draw character with transparent background */
+void gfx_draw_char_transparent(int x, int y, char c, unsigned int fg_color);
+
+/* Draw string with transparent background */
+void gfx_draw_string_transparent(int x, int y, const char *str, unsigned int fg_color);
+
 /* Draw a filled rectangle with border */
 void gfx_draw_window(int x, int y, int width, int height, unsigned int border_color, unsigned int bg_color);
 

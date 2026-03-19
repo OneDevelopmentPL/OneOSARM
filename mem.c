@@ -2,20 +2,12 @@
 
 #include "mem.h"
 
-/* Heap configuration */
-#define HEAP_SIZE 0x100000  /* 1MB heap */
-static uint8_t heap[HEAP_SIZE] __attribute__((aligned(8)));
-
-/* Heap start and end */
-static void *heap_start = heap;
-static void *heap_end = heap + HEAP_SIZE;
-
 /* Free list head */
 static mem_block_t *free_list = NULL;
 
 /* Statistics */
 static size_t total_allocated = 0;
-static size_t total_free = HEAP_SIZE;
+static size_t total_free = 0;
 
 /* Align size to 8-byte boundary */
 #define ALIGN_SIZE(size) (((size) + 7) & ~7)
