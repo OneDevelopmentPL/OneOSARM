@@ -56,7 +56,7 @@ Oznacza to, że możesz:
 - używać kodu
 - modyfikować go
 - kopiować
-- rozpowszechniać
+- rozpowszechniać <br>
 **Pod warunkiem zachowania informacji o autorze i kopii tej licencji.**
 
 ---
