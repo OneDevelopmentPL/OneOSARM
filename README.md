@@ -1,4 +1,4 @@
-# OneOS-ARM - English/Polski description/opis
+# OneOS-ARM - Opis po Polsku
 
 ## 📃 Krótki opis
 **OneOS-ARM** to system operacyjny, oparty na architekturze ARM. Sam zrobiłem go w 100% od zera. Zawiera aplikacje, system plików, intefejs użytkownika i podstawowy muliti-tasking pozwalający na otwieranie aplikacji w tle.
